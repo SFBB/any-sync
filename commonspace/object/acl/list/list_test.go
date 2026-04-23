@@ -13,6 +13,7 @@ import (
 	"github.com/anyproto/any-sync/commonspace/headsync/headstorage"
 	"github.com/anyproto/any-sync/commonspace/object/accountdata"
 	"github.com/anyproto/any-sync/commonspace/object/acl/aclrecordproto"
+	"github.com/anyproto/any-sync/commonspace/object/acl/list/listtest"
 	"github.com/anyproto/any-sync/commonspace/object/acl/recordverifier"
 	"github.com/anyproto/any-sync/consensus/consensusproto"
 	"github.com/anyproto/any-sync/util/crypto"
@@ -38,6 +39,10 @@ func createStore(ctx context.Context, t *testing.T) anystore.DB {
 }
 
 var mockMetadata = []byte("very important metadata")
+
+type noConsensusPeers struct{}
+
+func (noConsensusPeers) ConsensusPeers() []string { return nil }
 
 func newFixture(t *testing.T) *aclFixture {
 	ownerKeys, err := accountdata.NewRandom()
@@ -96,7 +101,7 @@ func (fx *aclFixture) inviteAccount(t *testing.T, perms AclPermissions) {
 	// building invite
 	inv, err := ownerAcl.RecordBuilder().BuildInvite()
 	require.NoError(t, err)
-	inviteRec := WrapAclRecord(inv.InviteRec)
+	inviteRec := listtest.WrapAclRecord(inv.InviteRec)
 	fx.addRec(t, inviteRec)
 
 	// building request join
@@ -105,7 +110,7 @@ func (fx *aclFixture) inviteAccount(t *testing.T, perms AclPermissions) {
 		Metadata:  mockMetadata,
 	})
 	require.NoError(t, err)
-	requestJoinRec := WrapAclRecord(requestJoin)
+	requestJoinRec := listtest.WrapAclRecord(requestJoin)
 	fx.addRec(t, requestJoinRec)
 
 	// building request accept
@@ -117,7 +122,7 @@ func (fx *aclFixture) inviteAccount(t *testing.T, perms AclPermissions) {
 	// validate
 	err = ownerAcl.ValidateRawRecord(requestAccept, nil)
 	require.NoError(t, err)
-	requestAcceptRec := WrapAclRecord(requestAccept)
+	requestAcceptRec := listtest.WrapAclRecord(requestAccept)
 	fx.addRec(t, requestAcceptRec)
 
 	// checking acl state
@@ -175,13 +180,13 @@ func TestAclList_InviteRevoke(t *testing.T) {
 	// building invite
 	inv, err := fx.ownerAcl.RecordBuilder().BuildInvite()
 	require.NoError(t, err)
-	inviteRec := WrapAclRecord(inv.InviteRec)
+	inviteRec := listtest.WrapAclRecord(inv.InviteRec)
 	fx.addRec(t, inviteRec)
 
 	// building invite revoke
 	inviteRevoke, err := fx.ownerAcl.RecordBuilder().BuildInviteRevoke(ownerState().lastRecordId)
 	require.NoError(t, err)
-	inviteRevokeRec := WrapAclRecord(inviteRevoke)
+	inviteRevokeRec := listtest.WrapAclRecord(inviteRevoke)
 	fx.addRec(t, inviteRevokeRec)
 
 	// checking acl state
@@ -206,7 +211,7 @@ func TestAclList_RequestDecline(t *testing.T) {
 	// building invite
 	inv, err := ownerAcl.RecordBuilder().BuildInvite()
 	require.NoError(t, err)
-	inviteRec := WrapAclRecord(inv.InviteRec)
+	inviteRec := listtest.WrapAclRecord(inv.InviteRec)
 	fx.addRec(t, inviteRec)
 
 	// building request join
@@ -214,13 +219,13 @@ func TestAclList_RequestDecline(t *testing.T) {
 		InviteKey: inv.InviteKey,
 	})
 	require.NoError(t, err)
-	requestJoinRec := WrapAclRecord(requestJoin)
+	requestJoinRec := listtest.WrapAclRecord(requestJoin)
 	fx.addRec(t, requestJoinRec)
 
 	// building request decline
 	requestDecline, err := ownerAcl.RecordBuilder().BuildRequestDecline(ownerState().lastRecordId)
 	require.NoError(t, err)
-	requestDeclineRec := WrapAclRecord(requestDecline)
+	requestDeclineRec := listtest.WrapAclRecord(requestDecline)
 	fx.addRec(t, requestDeclineRec)
 
 	// checking acl state
@@ -255,7 +260,7 @@ func TestAclList_Remove(t *testing.T) {
 		},
 	})
 	require.NoError(t, err)
-	removeRec := WrapAclRecord(remove)
+	removeRec := listtest.WrapAclRecord(remove)
 	fx.addRec(t, removeRec)
 
 	// checking acl state
@@ -294,7 +299,7 @@ func TestAclList_KeyChangeInvite(t *testing.T) {
 		ReadKey:     newReadKey,
 	})
 	require.NoError(t, err)
-	readKeyRec := WrapAclRecord(readKeyChange)
+	readKeyRec := listtest.WrapAclRecord(readKeyChange)
 	fx.addRec(t, readKeyRec)
 	fx.inviteAccount(t, AclPermissions(aclrecordproto.AclUserPermissions_Writer))
 }
@@ -313,8 +318,8 @@ func TestAclList_MetadataDecrypt(t *testing.T) {
 func TestAclList_ValidateUsesCorrectVerifier(t *testing.T) {
 	fx := newFixture(t)
 	var ownerAcl = fx.ownerAcl
-	ownerAcl.aclState.contentValidator.(*contentValidator).verifier = recordverifier.New()
-	ownerAcl.verifier = recordverifier.New()
+	ownerAcl.aclState.contentValidator.(*contentValidator).verifier = recordverifier.New(noConsensusPeers{})
+	ownerAcl.verifier = recordverifier.New(noConsensusPeers{})
 	// building invite
 	inv, err := ownerAcl.RecordBuilder().BuildInvite()
 	require.NoError(t, err)
@@ -354,7 +359,7 @@ func TestAclList_ReadKeyChange(t *testing.T) {
 			ReadKey:     newReadKey,
 		})
 		require.NoError(t, err)
-		readKeyRec := WrapAclRecord(readKeyChange)
+		readKeyRec := listtest.WrapAclRecord(readKeyChange)
 		fx.addRec(t, readKeyRec)
 
 		// checking acl state
@@ -415,7 +420,7 @@ func TestAclList_PermissionChange(t *testing.T) {
 		Permissions: AclPermissions(aclrecordproto.AclUserPermissions_Writer),
 	})
 	require.NoError(t, err)
-	permissionChangeRec := WrapAclRecord(permissionChange)
+	permissionChangeRec := listtest.WrapAclRecord(permissionChange)
 	fx.addRec(t, permissionChangeRec)
 
 	// checking acl state
@@ -443,7 +448,7 @@ func TestAclList_RequestRemove(t *testing.T) {
 
 	removeRequest, err := fx.accountAcl.RecordBuilder().BuildRequestRemove()
 	require.NoError(t, err)
-	removeRequestRec := WrapAclRecord(removeRequest)
+	removeRequestRec := listtest.WrapAclRecord(removeRequest)
 	fx.addRec(t, removeRequestRec)
 
 	recs := fx.accountAcl.AclState().RemoveRecords()
@@ -461,7 +466,7 @@ func TestAclList_RequestRemove(t *testing.T) {
 		},
 	})
 	require.NoError(t, err)
-	removeRec := WrapAclRecord(remove)
+	removeRec := listtest.WrapAclRecord(remove)
 	fx.addRec(t, removeRec)
 
 	// checking acl state
