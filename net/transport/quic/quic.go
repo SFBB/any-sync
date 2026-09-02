@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	libp2crypto "github.com/libp2p/go-libp2p/core/crypto"
@@ -37,6 +38,7 @@ type Quic interface {
 type quicTransport struct {
 	secure        secureservice.SecureService
 	accepter      transport.Accepter
+	connObserver  atomic.Pointer[func(ev transport.ConnCloseEvent)]
 	conf          Config
 	quicConf      *quic.Config
 	listeners     []*quic.Listener
@@ -72,6 +74,13 @@ func (q *quicTransport) Name() (name string) {
 
 func (q *quicTransport) SetAccepter(accepter transport.Accepter) {
 	q.accepter = accepter
+}
+
+// SetConnObserver registers an observer for close events of dialed
+// connections. Safe to call at any point in the lifecycle, including
+// concurrently with dials.
+func (q *quicTransport) SetConnObserver(observer func(ev transport.ConnCloseEvent)) {
+	q.connObserver.Store(&observer)
 }
 
 func (q *quicTransport) Run(ctx context.Context) (err error) {
@@ -124,7 +133,7 @@ func (q *quicTransport) Dial(ctx context.Context, addr string) (mc transport.Mul
 		_ = udpConn.Close()
 		return nil, err
 	}
-	
+
 	var remotePubKey libp2crypto.PubKey
 	select {
 	case remotePubKey = <-keyCh:
@@ -161,7 +170,11 @@ func (q *quicTransport) Dial(ctx context.Context, addr string) (mc transport.Mul
 		}()
 		return nil, err
 	}
-	return newConn(cctx, udpConn, qConn, time.Second*time.Duration(q.conf.CloseTimeoutSec), time.Second*time.Duration(q.conf.WriteTimeoutSec)), nil
+	mc = newConn(cctx, udpConn, qConn, time.Second*time.Duration(q.conf.CloseTimeoutSec), time.Second*time.Duration(q.conf.WriteTimeoutSec))
+	if observer := q.connObserver.Load(); observer != nil {
+		go mc.(*quicMultiConn).watch(*observer)
+	}
+	return mc, nil
 }
 
 func (q *quicTransport) acceptLoop(ctx context.Context, list *quic.Listener) {

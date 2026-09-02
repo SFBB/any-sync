@@ -33,6 +33,10 @@ func newConn(cctx context.Context, udpConn net.PacketConn, qconn connection, clo
 		connection:   qconn,
 		writeTimeout: writeTimeout,
 		closeTimeout: closeTimeout,
+		// Round(0) strips the monotonic reading so the lifetime is measured on
+		// the wall clock: the monotonic clock pauses while the machine sleeps,
+		// which would make a slept-through connection look seconds old.
+		startTime: time.Now().Round(0),
 	}
 }
 
@@ -41,6 +45,7 @@ type quicMultiConn struct {
 	cctx         context.Context
 	writeTimeout time.Duration
 	closeTimeout time.Duration
+	startTime    time.Time
 	bytesRead    atomic.Int64
 	bytesWritten atomic.Int64
 	connection
@@ -214,4 +219,3 @@ func (q quicNetConn) LocalAddr() net.Addr {
 func (q quicNetConn) RemoteAddr() net.Addr {
 	return q.remoteAddr
 }
-
