@@ -39,6 +39,7 @@ var (
 	ErrOwnerNotFound             = errors.New("owner not found")
 	ErrAddRecordOneToOne         = errors.New("adding a record to one-to-one space is forbidden")
 	ErrEmptyAclRecordData        = errors.New("acl record has neither model nor data")
+	ErrNoAclContent              = errors.New("acl record has no content")
 	ErrReadKeyChangeNotAlone     = errors.New("a batch read key change can only accompany invite revokes and declines")
 )
 
@@ -287,6 +288,11 @@ func (st *AclState) ApplyRecord(record *AclRecord) (err error) {
 		err = ErrIncorrectRecordSequence
 		return
 	}
+	// what a record creates is keyed by its id: the real one, or before acceptance a provisional one (see
+	// Unmarshall), never ""
+	if record.Id == "" {
+		return ErrEmptyRecordId
+	}
 	// if the model is not cached
 	if record.Model == nil {
 		// build/add paths drop Data once Model is set, so Model==nil here means a record was constructed
@@ -398,6 +404,9 @@ func (st *AclState) saveKeysFromRoot(id string, root *aclrecordproto.AclRoot) (e
 
 func (st *AclState) applyChangeData(record *AclRecord) (err error) {
 	model := record.Model.(*aclrecordproto.AclData)
+	if err = st.contentValidator.ValidateAclData(model); err != nil {
+		return err
+	}
 	for _, ch := range model.GetAclContent() {
 		if err = st.applyChangeContent(ch, record); err != nil {
 			log.Info("error while applying changes", zap.Error(err))
@@ -447,6 +456,9 @@ func (st *AclState) Copy() *AclState {
 	return newSt
 }
 
+// applyChangeContent applies one content value. A request or invite reference that does not resolve applies
+// as a no-op in the handlers that look one up (accept, decline, cancel, invite change, invite join):
+// validation refuses it, so it is reached only without validation, for a record already in the log.
 func (st *AclState) applyChangeContent(ch *aclrecordproto.AclContentValue, record *AclRecord) error {
 	switch {
 	case ch.GetOwnershipChange() != nil:
@@ -483,7 +495,7 @@ func (st *AclState) applyChangeContent(ch *aclrecordproto.AclContentValue, recor
 		return st.applySpaceOptionsChange(ch.GetSpaceOptionsChange(), record)
 	default:
 		log.Errorf("got unexpected content type: %s", record.Id)
-		return nil
+		return st.contentValidator.ValidateUnexpectedContent()
 	}
 }
 
@@ -520,7 +532,11 @@ func (st *AclState) applyInviteChange(ch *aclrecordproto.AclAccountInviteChange,
 	if err != nil {
 		return err
 	}
-	invite := st.invites[ch.InviteRecordId]
+	invite, exists := st.invites[ch.InviteRecordId]
+	if !exists {
+		// an unresolved reference is a no-op, see applyChangeContent
+		return nil
+	}
 	invite.Permissions = AclPermissions(ch.Permissions)
 	st.invites[ch.InviteRecordId] = invite
 	return nil
@@ -659,7 +675,11 @@ func (st *AclState) applyRequestAccept(ch *aclrecordproto.AclAccountRequestAccep
 	if err != nil {
 		return err
 	}
-	requestRecord, _ := st.requestRecords[ch.RequestRecordId]
+	requestRecord, exists := st.requestRecords[ch.RequestRecordId]
+	if !exists {
+		// an unresolved reference is a no-op, see applyChangeContent
+		return nil
+	}
 	pKeyString := mapKeyFromPubKey(acceptIdentity)
 	state, exists := st.accountStates[pKeyString]
 	permissions := AclPermissions(ch.Permissions)
@@ -676,7 +696,7 @@ func (st *AclState) applyRequestAccept(ch *aclrecordproto.AclAccountRequestAccep
 		Status:            StatusActive,
 		PermissionChanges: permissionChanges,
 	}
-	delete(st.pendingRequests, mapKeyFromPubKey(st.requestRecords[ch.RequestRecordId].RequestIdentity))
+	delete(st.pendingRequests, mapKeyFromPubKey(requestRecord.RequestIdentity))
 	delete(st.requestRecords, ch.RequestRecordId)
 
 	// If the current account is the one being accepted, then decrypt the read key using its private key
@@ -697,7 +717,11 @@ func (st *AclState) applyInviteJoinWithoutApprove(ch *aclrecordproto.AclAccountI
 	if err != nil {
 		return err
 	}
-	inviteRecord, _ := st.invites[ch.InviteRecordId]
+	inviteRecord, exists := st.invites[ch.InviteRecordId]
+	if !exists {
+		// an unresolved reference is a no-op, see applyChangeContent
+		return nil
+	}
 	permissions := AclPermissions(ch.Permissions)
 	if permissions.NoPermissions() {
 		permissions = inviteRecord.Permissions
@@ -788,14 +812,19 @@ func (st *AclState) applyRequestDecline(ch *aclrecordproto.AclAccountRequestDecl
 	if err != nil {
 		return err
 	}
-	pk := mapKeyFromPubKey(st.requestRecords[ch.RequestRecordId].RequestIdentity)
+	requestRecord, exists := st.requestRecords[ch.RequestRecordId]
+	if !exists {
+		// an unresolved reference is a no-op, see applyChangeContent
+		return nil
+	}
+	pk := mapKeyFromPubKey(requestRecord.RequestIdentity)
 	accSt, exists := st.accountStates[pk]
 	if !exists {
 		return ErrNoSuchAccount
 	}
 	accSt.Status = StatusDeclined
 	st.accountStates[pk] = accSt
-	delete(st.pendingRequests, mapKeyFromPubKey(st.requestRecords[ch.RequestRecordId].RequestIdentity))
+	delete(st.pendingRequests, pk)
 	delete(st.requestRecords, ch.RequestRecordId)
 	return nil
 }
@@ -805,19 +834,23 @@ func (st *AclState) applyRequestCancel(ch *aclrecordproto.AclAccountRequestCance
 	if err != nil {
 		return err
 	}
-	pk := mapKeyFromPubKey(st.requestRecords[ch.RecordId].RequestIdentity)
+	rec, exists := st.requestRecords[ch.RecordId]
+	if !exists {
+		// an unresolved reference is a no-op, see applyChangeContent
+		return nil
+	}
+	pk := mapKeyFromPubKey(rec.RequestIdentity)
 	accSt, exists := st.accountStates[pk]
 	if !exists {
 		return ErrNoSuchAccount
 	}
-	rec := st.requestRecords[ch.RecordId]
 	if rec.Type == RequestTypeJoin {
 		accSt.Status = StatusCanceled
 	} else {
 		accSt.Status = StatusActive
 	}
 	st.accountStates[pk] = accSt
-	delete(st.pendingRequests, mapKeyFromPubKey(st.requestRecords[ch.RecordId].RequestIdentity))
+	delete(st.pendingRequests, pk)
 	delete(st.requestRecords, ch.RecordId)
 	return nil
 }
