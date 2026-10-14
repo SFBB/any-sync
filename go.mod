@@ -4,7 +4,7 @@ go 1.26.0
 
 require (
 	filippo.io/edwards25519 v1.2.0
-	github.com/anyproto/any-store v1.0.2
+	github.com/anyproto/any-store v1.0.3
 	github.com/anyproto/go-bip39 v1.0.0
 	github.com/anyproto/go-chash v0.1.0
 	github.com/anyproto/go-slip10 v1.0.1
@@ -33,7 +33,7 @@ require (
 	github.com/quic-go/quic-go v0.63.0
 	github.com/quic-go/webtransport-go v0.13.0
 	github.com/stretchr/testify v1.12.1
-	github.com/tmc/go-iroh v0.2.1
+	github.com/tmc/go-iroh v0.3.0
 	github.com/zeebo/blake3 v0.2.4
 	go.uber.org/atomic v1.12.0
 	go.uber.org/mock v0.6.0
